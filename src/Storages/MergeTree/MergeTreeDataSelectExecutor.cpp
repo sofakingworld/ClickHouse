@@ -57,6 +57,8 @@ namespace std
 #include <Processors/Executors/TreeExecutorBlockInputStream.h>
 #include <Processors/Sources/SourceFromInputStream.h>
 #include <Processors/ConcatProcessor.h>
+#include <Processors/Merges/CollapsingSortedTransform.h>
+#include <Processors/Transforms/SplittingByHashTransform.h>
 
 namespace ProfileEvents
 {
@@ -617,6 +619,7 @@ Pipes MergeTreeDataSelectExecutor::readFromParts(
 
         res = spreadMarkRangesAmongStreamsFinal(
             std::move(parts_with_ranges),
+            num_streams,
             column_names_to_read,
             max_block_size,
             settings.use_uncompressed_cache,
@@ -1017,6 +1020,7 @@ Pipes MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsWithOrder(
 
 Pipes MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal(
     RangesInDataParts && parts,
+    size_t num_streams,
     const Names & column_names,
     UInt64 max_block_size,
     bool use_uncompressed_cache,
@@ -1074,71 +1078,111 @@ Pipes MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal(
     for (size_t i = 0; i < sort_columns_size; ++i)
         sort_description.emplace_back(header.getPositionByName(sort_columns[i]), 1, 1);
 
-    /// Converts pipes to BlockInputsStreams.
-    /// It is temporary, till not all merging streams are implemented as processors.
-    auto streams_to_merge = [&pipes]()
+    auto get_merging_processor = [&]() -> ProcessorPtr
     {
-        size_t num_streams = pipes.size();
+        switch (data.merging_params.mode)
+        {
+            case MergeTreeData::MergingParams::Ordinary:
+            {
+                return std::make_shared<MergingSortedTransform>(header, pipes.size(),
+                           sort_description, max_block_size);
+            }
 
-        BlockInputStreams streams;
-        streams.reserve(num_streams);
+            case MergeTreeData::MergingParams::Collapsing:
+                return std::make_shared<CollapsingSortedTransform>(header, pipes.size(),
+                           sort_description, data.merging_params.sign_column, max_block_size);
 
-        for (size_t i = 0; i < num_streams; ++i)
-            streams.emplace_back(std::make_shared<TreeExecutorBlockInputStream>(std::move(pipes[i])));
+            case MergeTreeData::MergingParams::Summing:
+                return std::make_shared<SummingSortedTransform>(header, pipes.size(),
+                           sort_description, data.merging_params.columns_to_sum, max_block_size);
 
-        pipes.clear();
-        return streams;
+            case MergeTreeData::MergingParams::Aggregating:
+                return std::make_shared<AggregatingSortedTransform>(header, pipes.size(),
+                           sort_description, max_block_size);
+
+            case MergeTreeData::MergingParams::Replacing:
+                return std::make_shared<ReplacingSortedTransform>(header, pipes.size(),
+                           sort_description, data.merging_params.version_column, max_block_size);
+
+            case MergeTreeData::MergingParams::VersionedCollapsing:
+                return std::make_shared<VersionedCollapsingTransform>(header, pipes.size(),
+                           sort_description, data.merging_params.sign_column, max_block_size);
+
+            case MergeTreeData::MergingParams::Graphite:
+                throw Exception("GraphiteMergeTree doesn't support FINAL", ErrorCodes::LOGICAL_ERROR);
+        }
     };
 
-    BlockInputStreamPtr merged;
-    ProcessorPtr merged_processor;
-    switch (data.merging_params.mode)
+    if (!settings.parallel_final || num_streams <= 1 || query_info.force_tree_shaped_pipeline)
     {
-        case MergeTreeData::MergingParams::Ordinary:
-        {
-            merged_processor = std::make_shared<MergingSortedTransform>(header, pipes.size(),
-                    sort_description, max_block_size);
-            break;
-        }
 
-        case MergeTreeData::MergingParams::Collapsing:
-            merged = std::make_shared<CollapsingFinalBlockInputStream>(
-                    streams_to_merge(), sort_description, data.merging_params.sign_column);
-            break;
-
-        case MergeTreeData::MergingParams::Summing:
-            merged_processor = std::make_shared<SummingSortedTransform>(header, pipes.size(),
-                    sort_description, data.merging_params.columns_to_sum, max_block_size);
-            break;
-
-        case MergeTreeData::MergingParams::Aggregating:
-            merged_processor = std::make_shared<AggregatingSortedTransform>(header, pipes.size(),
-                    sort_description, max_block_size);
-            break;
-
-        case MergeTreeData::MergingParams::Replacing:    /// TODO Make ReplacingFinalBlockInputStream
-            merged_processor = std::make_shared<ReplacingSortedTransform>(header, pipes.size(),
-                    sort_description, data.merging_params.version_column, max_block_size);
-            break;
-
-        case MergeTreeData::MergingParams::VersionedCollapsing: /// TODO Make VersionedCollapsingFinalBlockInputStream
-            merged_processor = std::make_shared<VersionedCollapsingTransform>(header, pipes.size(),
-                    sort_description, data.merging_params.sign_column, max_block_size);
-            break;
-
-        case MergeTreeData::MergingParams::Graphite:
-            throw Exception("GraphiteMergeTree doesn't support FINAL", ErrorCodes::LOGICAL_ERROR);
-    }
-
-    if (merged_processor)
-    {
-        Pipe pipe(std::move(pipes), std::move(merged_processor));
+        Pipe pipe(std::move(pipes), get_merging_processor());
         pipes = Pipes();
         pipes.emplace_back(std::move(pipe));
+
+        return pipes;
     }
 
-    if (merged)
-        pipes.emplace_back(std::make_shared<SourceFromInputStream>(merged));
+    ColumnNumbers key_columns;
+    key_columns.reserve(sort_description.size());
+
+    for (auto & desc : sort_description)
+    {
+        if (!desc.column_name.empty())
+            key_columns.push_back(header.getPositionByName(desc.column_name));
+        else
+            key_columns.emplace_back(desc.column_number);
+    }
+
+    Processors splitters;
+    splitters.reserve(pipes.size());
+
+    for (auto & pipe : pipes)
+    {
+        auto splitter = std::make_shared<SplittingByHashTransform>(pipe.getHeader(), num_streams, key_columns);
+        connect(pipe.getPort(), splitters.back()->getInputs().front());
+        splitters.emplace_back(std::move(splitter));
+    }
+
+    Processors merges;
+    std::vector<InputPorts::iterator> input_ports;
+    merges.reserve(num_streams);
+    input_ports.reserve(num_streams);
+
+    for (size_t i = 0; i < num_streams; ++i)
+    {
+        auto merge = get_merging_processor();
+        input_ports.emplace_back(merge->getInputs().begin());
+        merges.emplace_back(std::move(merge));
+    }
+
+    /// Connect outputs of i-th splitter with i-th input port of every merge.
+    for (auto & splitter : splitters)
+    {
+        size_t input_num = 0;
+        for (auto & output : splitter->getOutputs())
+        {
+            connect(output, *input_ports[input_num]);
+            ++input_ports[input_num];
+            ++input_num;
+        }
+    }
+
+    Processors processors;
+    for (auto & pipe : pipes)
+    {
+        auto pipe_processors = std::move(pipe).detachProcessors();
+        processors.insert(processors.end(), pipe_processors.begin(), pipe_processors.end());
+    }
+
+    pipes.clear();
+    pipes.reserve(num_streams);
+    for (auto & merge : merges)
+        pipes.emplace_back(&merge->getOutputs().front());
+
+    pipes.front().addProcessors(processors);
+    pipes.front().addProcessors(merges);
+    pipes.front().addProcessors(splitters);
 
     return pipes;
 }
