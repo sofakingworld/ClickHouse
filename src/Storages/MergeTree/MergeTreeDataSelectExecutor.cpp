@@ -1142,7 +1142,7 @@ Pipes MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal(
     for (auto & pipe : pipes)
     {
         auto splitter = std::make_shared<SplittingByHashTransform>(pipe.getHeader(), num_streams, key_columns);
-        connect(pipe.getPort(), splitters.back()->getInputs().front());
+        connect(pipe.getPort(), splitter->getInputPort());
         splitters.emplace_back(std::move(splitter));
     }
 
