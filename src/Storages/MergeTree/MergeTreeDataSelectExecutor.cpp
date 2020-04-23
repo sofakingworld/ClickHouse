@@ -1111,6 +1111,8 @@ Pipes MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal(
             case MergeTreeData::MergingParams::Graphite:
                 throw Exception("GraphiteMergeTree doesn't support FINAL", ErrorCodes::LOGICAL_ERROR);
         }
+
+        __builtin_unreachable();
     };
 
     if (!settings.parallel_final || num_streams <= 1 || query_info.force_tree_shaped_pipeline)
