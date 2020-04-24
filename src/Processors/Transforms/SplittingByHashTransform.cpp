@@ -14,8 +14,9 @@ struct ChunkInfoWithChunks : public ChunkInfo
 };
 
 SplittingByHashTransform::SplittingByHashTransform(
-    const Block & header, size_t num_outputs, ColumnNumbers key_columns_)
+    const Block & header, size_t num_outputs_, ColumnNumbers key_columns_)
     : ISimpleTransform(header, {}, false)
+    , num_outputs(num_outputs_)
     , key_columns(std::move(key_columns_))
     , hash(0)
 {
@@ -110,8 +111,8 @@ void SplittingByHashTransform::transform(Chunk & chunk)
     auto chunk_info = std::make_shared<ChunkInfoWithChunks>();
 
     calculateWeakHash32(chunk, key_columns, hash);
-    fillSelector(hash, outputs.size(), selector);
-    splitChunk(chunk, selector, outputs.size(), chunk_info->chunks);
+    fillSelector(hash, num_outputs, selector);
+    splitChunk(chunk, selector, num_outputs, chunk_info->chunks);
 
     chunk.clear();
     chunk.setChunkInfo(std::move(chunk_info));
@@ -217,7 +218,7 @@ void ResizeByHashTransform::work()
 
     output_chunks = std::move(chunk_info->chunks);
     if (output_chunks.size() != outputs.size())
-        throw Exception("ResizeByHashTransform expected " + std::to_string(output_chunks.size()) + " chunks from for input" +
+        throw Exception("ResizeByHashTransform expected " + std::to_string(outputs.size()) + " chunks from for input" +
                         " but got " + std::to_string(output_chunks.size()), ErrorCodes::LOGICAL_ERROR);
 
     input_chunk.clear();

@@ -13,11 +13,12 @@ namespace DB
 class SplittingByHashTransform : public ISimpleTransform
 {
 public:
-    SplittingByHashTransform(const Block & header, size_t num_outputs, ColumnNumbers key_columns_);
+    SplittingByHashTransform(const Block & header, size_t num_outputs_, ColumnNumbers key_columns_);
     String getName() const override { return "SplittingByHash"; }
     void transform(Chunk &) override;
 
 private:
+    size_t num_outputs;
     ColumnNumbers key_columns;
 
     IColumn::Selector selector;
