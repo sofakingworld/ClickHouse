@@ -219,7 +219,7 @@ IProcessor::Status ResizeByHashTransform::prepareGenerate()
 
 void ResizeByHashTransform::work()
 {
-    auto * chunk_info = typeid_cast<ChunkInfoWithChunks *>(input_chunk.getChunkInfo().get());
+    const auto * chunk_info = typeid_cast<const ChunkInfoWithChunks *>(input_chunk.getChunkInfo().get());
     if (!chunk_info)
         throw Exception("ResizeByHashTransform expected ChunkInfo for inout chunk", ErrorCodes::LOGICAL_ERROR);
 
