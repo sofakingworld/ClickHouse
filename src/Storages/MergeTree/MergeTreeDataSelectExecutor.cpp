@@ -1137,13 +1137,17 @@ Pipes MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal(
     }
 
     Processors splitters;
+    Processors resizes;
     splitters.reserve(pipes.size());
 
     for (auto & pipe : pipes)
     {
         auto splitter = std::make_shared<SplittingByHashTransform>(pipe.getHeader(), num_streams, key_columns);
+        auto resize = std::make_shared<ResizeByHashTransform>(pipe.getHeader(), num_streams);
         connect(pipe.getPort(), splitter->getInputPort());
+        connect(splitter->getOutputPort(), resize->getInputPort());
         splitters.emplace_back(std::move(splitter));
+        resizes.emplace_back(std::move(resize));
     }
 
     Processors merges;
@@ -1159,10 +1163,10 @@ Pipes MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal(
     }
 
     /// Connect outputs of i-th splitter with i-th input port of every merge.
-    for (auto & splitter : splitters)
+    for (auto & resize : resizes)
     {
         size_t input_num = 0;
-        for (auto & output : splitter->getOutputs())
+        for (auto & output : resize->getOutputs())
         {
             connect(output, *input_ports[input_num]);
             ++input_ports[input_num];
@@ -1183,8 +1187,9 @@ Pipes MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal(
         pipes.emplace_back(&merge->getOutputs().front());
 
     pipes.front().addProcessors(processors);
-    pipes.front().addProcessors(merges);
     pipes.front().addProcessors(splitters);
+    pipes.front().addProcessors(resizes);
+    pipes.front().addProcessors(merges);
 
     return pipes;
 }

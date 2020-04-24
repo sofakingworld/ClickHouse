@@ -1,32 +1,44 @@
 #pragma once
 #include <Processors/IProcessor.h>
+#include <Processors/ISimpleTransform.h>
 #include <Core/ColumnNumbers.h>
 #include <Common/WeakHash.h>
 
 namespace DB
 {
 
-/// Split single stream of chunks to num_outputs streams.
+/// Split single chunks to num_outputs chunks.
 /// Split is performed by formula (WeakHash(key_columns) * num_outputs / MAX_INT).
-class SplittingByHashTransform : public IProcessor
+/// All this chunks are returned via single output port. Use ResizeByHashTransform to divide this chunks between output ports.
+class SplittingByHashTransform : public ISimpleTransform
 {
 public:
     SplittingByHashTransform(const Block & header, size_t num_outputs, ColumnNumbers key_columns_);
-
     String getName() const override { return "SplittingByHash"; }
+    void transform(Chunk &) override;
+
+private:
+    ColumnNumbers key_columns;
+
+    IColumn::Selector selector;
+    WeakHash32 hash;
+};
+
+/// Resize input from SplittingByHashTransform to different output ports.
+class ResizeByHashTransform : public IProcessor
+{
+public:
+    ResizeByHashTransform(const Block & header, size_t num_outputs);
+
+    String getName() const override { return "ResizeByHash"; }
     Status prepare() override;
     void work() override;
 
     InputPort & getInputPort() { return inputs.front(); }
 
 private:
-    ColumnNumbers key_columns;
-
     Chunk input_chunk;
     Chunks output_chunks;
-
-    IColumn::Selector selector;
-    WeakHash32 hash;
 
     bool is_generating_phase = false;
 

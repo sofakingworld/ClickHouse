@@ -62,7 +62,7 @@ ISimpleTransform::Status ISimpleTransform::prepare()
             return Status::NeedData;
         }
 
-        current_data = input.pullData(true);
+        current_data = input.pullData(set_input_not_needed_after_read);
         has_input = true;
 
         if (current_data.exception)
@@ -74,9 +74,6 @@ ISimpleTransform::Status ISimpleTransform::prepare()
             /// No more data needed. Exception will be thrown (or swallowed) later.
             input.setNotNeeded();
         }
-
-        if (set_input_not_needed_after_read)
-            input.setNotNeeded();
     }
 
     /// Now transform.
@@ -105,7 +102,7 @@ void ISimpleTransform::work()
     if (!skip_empty_chunks || current_data.chunk)
         transformed = true;
 
-    if (transformed && !current_data.chunk)
+    if (transformed && !current_data.chunk && !getOutputPort().getHeader())
         /// Support invariant that chunks must have the same number of columns as header.
         current_data.chunk = Chunk(getOutputPort().getHeader().cloneEmpty().getColumns(), 0);
 }

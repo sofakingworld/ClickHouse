@@ -24,7 +24,7 @@ protected:
     /// Set input port NotNeeded after chunk was pulled.
     /// Input port will become needed again only after data was transformed.
     /// This allows to escape caching chunks in input port, which can lead to uneven data distribution.
-    bool set_input_not_needed_after_read = false;
+    bool set_input_not_needed_after_read = true;
 
     virtual void transform(Chunk & chunk) = 0;
     virtual bool needInputData() const { return true; }

@@ -8,12 +8,19 @@ namespace ErrorCodes
     extern const int LOGICAL_ERROR;
 }
 
+struct ChunkInfoWithChunks : public ChunkInfo
+{
+    Chunks chunks;
+};
+
 SplittingByHashTransform::SplittingByHashTransform(
     const Block & header, size_t num_outputs, ColumnNumbers key_columns_)
-    : IProcessor(InputPorts(1, header), OutputPorts(num_outputs, header))
+    : ISimpleTransform(header, {}, false)
     , key_columns(std::move(key_columns_))
     , hash(0)
 {
+    // setInputNotNeededAfterRead(false);
+
     if (num_outputs <= 1)
         throw Exception("SplittingByHashTransform expects more than 1 outputs, got " + std::to_string(num_outputs),
                         ErrorCodes::LOGICAL_ERROR);
@@ -29,14 +36,22 @@ SplittingByHashTransform::SplittingByHashTransform(
                             ErrorCodes::LOGICAL_ERROR);
 }
 
+ResizeByHashTransform::ResizeByHashTransform(const Block & header, size_t num_outputs)
+    : IProcessor(InputPorts(1, Block()), OutputPorts(num_outputs, header))
+{
+    if (num_outputs <= 1)
+        throw Exception("ResizeByHashTransform expects more than 1 outputs, got " + std::to_string(num_outputs),
+                        ErrorCodes::LOGICAL_ERROR);
+}
+
 static void calculateWeakHash32(const Chunk & chunk, const ColumnNumbers & key_columns, WeakHash32 & hash)
 {
     auto num_rows = chunk.getNumRows();
-    auto & columns = chunk.getColumns();
+    const auto & columns = chunk.getColumns();
 
     hash.reset(num_rows);
 
-    for (auto & column_number : key_columns)
+    for (const auto & column_number : key_columns)
         columns[column_number]->updateWeakHash32(hash);
 }
 
@@ -44,7 +59,7 @@ static void fillSelector(const WeakHash32 & hash, size_t num_outputs, IColumn::S
 {
     /// Row from interval [(2^32 / num_outputs) * i, (2^32 / num_outputs) * (i + 1)) goes to bucket with number i.
 
-    auto & hash_data = hash.getData();
+    const auto & hash_data = hash.getData();
     size_t num_rows = hash_data.size();
     selector.resize(num_rows);
 
@@ -58,11 +73,11 @@ static void fillSelector(const WeakHash32 & hash, size_t num_outputs, IColumn::S
 
 static void splitChunk(const Chunk & chunk, IColumn::Selector & selector, size_t num_outputs, Chunks & result_chunks)
 {
-    auto & columns = chunk.getColumns();
+    const auto & columns = chunk.getColumns();
     result_chunks.resize(num_outputs);
 
     bool first = true;
-    for (auto & column : columns)
+    for (const auto & column : columns)
     {
         auto scatter = column->scatter(num_outputs, selector);
 
@@ -90,15 +105,19 @@ static void splitChunk(const Chunk & chunk, IColumn::Selector & selector, size_t
     }
 }
 
-void SplittingByHashTransform::work()
+void SplittingByHashTransform::transform(Chunk & chunk)
 {
-    calculateWeakHash32(input_chunk, key_columns, hash);
+    auto chunk_info = std::make_shared<ChunkInfoWithChunks>();
+
+    calculateWeakHash32(chunk, key_columns, hash);
     fillSelector(hash, outputs.size(), selector);
-    splitChunk(input_chunk, selector, outputs.size(), output_chunks);
-    input_chunk.clear();
+    splitChunk(chunk, selector, outputs.size(), chunk_info->chunks);
+
+    chunk.clear();
+    chunk.setChunkInfo(std::move(chunk_info));
 }
 
-IProcessor::Status SplittingByHashTransform::prepare()
+IProcessor::Status ResizeByHashTransform::prepare()
 {
     if (is_generating_phase)
         return prepareGenerate();
@@ -106,7 +125,7 @@ IProcessor::Status SplittingByHashTransform::prepare()
         return prepareConsume();
 }
 
-IProcessor::Status SplittingByHashTransform::prepareConsume()
+IProcessor::Status ResizeByHashTransform::prepareConsume()
 {
     auto & input = getInputPort();
 
@@ -159,7 +178,7 @@ IProcessor::Status SplittingByHashTransform::prepareConsume()
     return Status::Ready;
 }
 
-IProcessor::Status SplittingByHashTransform::prepareGenerate()
+IProcessor::Status ResizeByHashTransform::prepareGenerate()
 {
     bool has_full_ports = false;
     bool all_outputs_processed = true;
@@ -196,6 +215,16 @@ IProcessor::Status SplittingByHashTransform::prepareGenerate()
     /// !has_full_ports => !is_generating_phase
     /// This can happen if chunks for not finished output ports are all empty.
     return prepareConsume();
+}
+
+void ResizeByHashTransform::work()
+{
+    auto * chunk_info = typeid_cast<ChunkInfoWithChunks *>(input_chunk.getChunkInfo().get());
+    if (!chunk_info)
+        throw Exception("ResizeByHashTransform expected ChunkInfo for inout chunk", ErrorCodes::LOGICAL_ERROR);
+
+    output_chunks = std::move(chunk_info->chunks);
+    input_chunk.clear();
 }
 
 }
