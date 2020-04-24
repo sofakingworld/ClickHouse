@@ -102,7 +102,7 @@ void ISimpleTransform::work()
     if (!skip_empty_chunks || current_data.chunk)
         transformed = true;
 
-    if (transformed && !current_data.chunk && !getOutputPort().getHeader())
+    if (transformed && !current_data.chunk && getOutputPort().getHeader())
         /// Support invariant that chunks must have the same number of columns as header.
         current_data.chunk = Chunk(getOutputPort().getHeader().cloneEmpty().getColumns(), 0);
 }

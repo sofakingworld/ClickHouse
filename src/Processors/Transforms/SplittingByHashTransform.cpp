@@ -10,7 +10,7 @@ namespace ErrorCodes
 
 struct ChunkInfoWithChunks : public ChunkInfo
 {
-    Chunks chunks;
+    mutable Chunks chunks;
 };
 
 SplittingByHashTransform::SplittingByHashTransform(
