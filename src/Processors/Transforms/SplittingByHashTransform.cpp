@@ -20,7 +20,7 @@ SplittingByHashTransform::SplittingByHashTransform(
     , key_columns(std::move(key_columns_))
     , hash(0)
 {
-    // setInputNotNeededAfterRead(false);
+    setInputNotNeededAfterRead(false);
 
     if (num_outputs <= 1)
         throw Exception("SplittingByHashTransform expects more than 1 outputs, got " + std::to_string(num_outputs),
