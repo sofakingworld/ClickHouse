@@ -163,15 +163,7 @@ IProcessor::Status ResizeByHashTransform::prepareConsume()
     if (!input.hasData())
         return Status::NeedData;
 
-    input_chunk = input.pull(true);
-
-    if (!input_chunk.hasRows())
-    {
-        /// Skip generating and ask for another chunk.
-        input_chunk.clear();
-        input.setNeeded();
-        return Status::NeedData;
-    }
+    input_chunk = input.pull();
 
     /// Next phase after work() is generating.
     is_generating_phase = true;
@@ -221,9 +213,13 @@ void ResizeByHashTransform::work()
 {
     const auto * chunk_info = typeid_cast<const ChunkInfoWithChunks *>(input_chunk.getChunkInfo().get());
     if (!chunk_info)
-        throw Exception("ResizeByHashTransform expected ChunkInfo for inout chunk", ErrorCodes::LOGICAL_ERROR);
+        throw Exception("ResizeByHashTransform expected ChunkInfo for input chunk", ErrorCodes::LOGICAL_ERROR);
 
     output_chunks = std::move(chunk_info->chunks);
+    if (output_chunks.size() != outputs.size())
+        throw Exception("ResizeByHashTransform expected " + std::to_string(output_chunks.size()) + " chunks from for input" +
+                        " but got " + std::to_string(output_chunks.size()), ErrorCodes::LOGICAL_ERROR);
+
     input_chunk.clear();
 }
 
